@@ -10,6 +10,7 @@
 
 # jupyter
 *.ipynb_checkpoints
+*.ipynb
 
 # weights
 *.ckpt

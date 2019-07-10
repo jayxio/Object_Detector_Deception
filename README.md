@@ -31,7 +31,7 @@ Best wishes!
 
 ### 2. Install
 
-(1) git clone https://github.com/xuanwu-baidu/YOLO_attack.git 
+(1) git clone https://github.com/xuanwu-baidu/Object_Detector_Deception.git 
 
 (2) Download weights file from https://drive.google.com/file/d/0B2JbaJSrWLpza0FtQlc3ejhMTTA/view?usp=sharing
 
@@ -44,7 +44,7 @@ Best wishes!
 (2) Run command:
     `python YOLO_tiny_tf_attack.py -fromfile test/Darren.jpg -frommuskfile test/Darren.xml`
 
-(3) Tuning the hyperparameter `self.punishment` and `attack steps` to control the optimization the target.
+(3) Tuning the hyperparameter `self.punishment` and `attack steps` to control the optimization of the target.
 
 (4) See source code under `./attack_methods/` for more attack option.
 
@@ -67,6 +67,6 @@ If you use ODD for academic research, you are highly encouraged (though not requ
      url   = {https://github.com/xuanwu-baidu/Object_Detector_Deception.git}
     }
 
-### 5. Changelog
+### 6. Changelog
 
 2019/07/08 : New Release!
