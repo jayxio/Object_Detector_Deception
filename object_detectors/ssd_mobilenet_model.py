@@ -134,7 +134,7 @@ def main(args):
             print("Successfully Loaded!")
             v1 = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
             
-            # test 
+            # test
             input_batch = test_img[np.newaxis, :]
             
             feed_dict = {input_tensor: input_batch}

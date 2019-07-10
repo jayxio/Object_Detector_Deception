@@ -1,3 +1,27 @@
+'''
+YOLO_tensorflow LICENSE
+Version 0.1, FEB 15 2016
+
+ACCORDING TO ORIGINAL CODE'S LICENSE,
+
+DO NOT USE THIS ON COMMERCIAL!
+I OR ORIGINAL AUTHOR DO NOT HOLD LIABILITY FOR ANY DAMAGES!
+
+Thanks Github user Jinyoung Choi for contributing the YOLO_tiny_tf.
+
+BELOW IS THE ORIGINAL CODE'S LICENSE
+{
+THIS SOFTWARE LICENSE IS PROVIDED "ALL CAPS" SO THAT YOU KNOW IT IS SUPER
+SERIOUS AND YOU DON'T MESS AROUND WITH COPYRIGHT LAW BECAUSE YOU WILL GET IN
+TROUBLE HERE ARE SOME OTHER BUZZWORDS COMMONLY IN THESE THINGS WARRANTIES
+LIABILITY CONTRACT TORT LIABLE CLAIMS RESTRICTION MERCHANTABILITY SUBJECT TO
+THE FOLLOWING CONDITIONS:
+
+1. #yolo
+2. #swag
+3. #blazeit
+}
+'''
 import tensorflow as tf
 import cv2
 import numpy as np
@@ -7,7 +31,7 @@ import sys
 import argparse
 import pdb
 
-class yolo_tiny_model:
+class YOLO_tiny_model:
     model_input = None
     mode = None
     disp_console = None
@@ -69,6 +93,7 @@ class yolo_tiny_model:
         #self.yan=tf.reduce_sum(tf.maximum(self.probs,0.2))
         #self.yan=tf.reduce_sum(self.probs)
         Cp = tf.reduce_max(self.p) # confidence for people
+#         Cp = tf.reduce_sum(self.p)
         
         return Cp
     

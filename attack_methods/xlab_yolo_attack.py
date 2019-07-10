@@ -12,9 +12,9 @@ import transformation
 import os
 import re
 
-from yolo_tiny_model import yolo_tiny_model
+from object_detectors.yolo_tiny_model import YOLO_tiny_model
 
-class ObjectDetectorAttacker:
+class Xlab_yolo_attack:
     # init global variable
     fromfile = None
     fromfolder = None
@@ -49,10 +49,15 @@ class ObjectDetectorAttacker:
             # read picture file
             if argvs[i] == '-fromfile' : self.fromfile = argvs[i+1]
             if argvs[i] == '-fromfolder' : self.fromfolder = argvs[i+1]
-            if argvs[i] == '-frommuskfile' : self.frommuskfile = argvs[i+1]
+            if argvs[i] == '-frommaskfile' : self.frommaskfile = argvs[i+1]
+            if argvs[i] == '-fromlogofile' : 
+                self.fromlogofile = argvs[i+1]
+            else:
+                self.fromlogofile = None
+                
             if argvs[i] == '-tofile_img' : self.tofile_img = argvs[i+1] ; self.filewrite_img = True
             if argvs[i] == '-tofile_txt' : self.tofile_txt = argvs[i+1] ; self.filewrite_txt = True
-
+            
             if argvs[i] == '-imshow' :
                 if argvs[i+1] == '1' :self.imshow = True
                 else : self.imshow = False
@@ -73,40 +78,45 @@ class ObjectDetectorAttacker:
         if self.disp_console : print("Building YOLO attack graph...")
 
         if self.useEOT == True:
-            self.sample_matrixes = transformation.target_sample()
+            self.EOT_transforms = transformation.target_sample()
         else:
             pass
 
+        num_of_EOT_transforms = len(self.EOT_transforms)
+        num_of_ob_samples = 2
+        print(f'EOT transform number: {num_of_EOT_transforms}')
         # x is the image
-        self.x = tf.placeholder('float32',[1,448,448,3])
-        self.musk = tf.placeholder('float32',[1,448,448,3])
+        self.x = tf.placeholder('float32',[num_of_EOT_transforms * num_of_ob_samples,448,448,3])
+        self.mask = tf.placeholder('float32',[1,448,448,3])
 
         self.punishment = tf.placeholder('float32',[1])
         self.smoothness_punishment=tf.placeholder('float32',[1])
         init_inter = tf.constant_initializer(0.001*np.random.random([1,448,448,3]))
-        self.inter = tf.get_variable(name='inter',shape=[1,448,448,3],dtype=tf.float32,initializer=init_inter)
+        self.inter = tf.get_variable(name='inter',
+                                     shape=[1,448,448,3],
+                                     dtype=tf.float32,
+                                     initializer=init_inter)
 
         # box constraints ensure self.x within(0,1)
         self.w = tf.atanh(self.x)
 
-        # add musk
-        self.musked_inter = tf.multiply(self.musk,self.inter)
-        self.shuru = tf.add(self.w,self.musked_inter)
+        # add mask
+        self.masked_inter = tf.multiply(self.mask,self.inter)
+        self.shuru = tf.add(self.w,self.masked_inter)
         self.constrained = tf.tanh(self.shuru)
         
         # create session
         self.sess = tf.Session() # config=tf.ConfigProto(log_device_placement=True)
-        
-        # self.max_Cp = self.YOLO_model(self.constrained,mode="init_model")
+
         init_dict = {'yolo_model_input': self.constrained,
                      'yolo_mode': "init_model",
                      'yolo_disp_console': self.disp_console,
                      'session': self.sess}
-        
+
         # create a yolo model
         self.yolo_detector = yolo_tiny_model(init_dict)
         self.max_Cp = self.yolo_detector.get_output_tensor()
-        
+
         MODEL_variables = self.yolo_detector.get_yolo_variables()
         # Alternatives:
         # leave out tf.inter variable which is not part of yolo model
@@ -120,8 +130,16 @@ class ObjectDetectorAttacker:
         # transform original picture over EOT
         if self.useEOT == True:
             print("Building EOT Model graph!")
-            for id, sample_matrix in enumerate(self.sample_matrixes):
-                self.another_constrained = tf.contrib.image.transform(self.constrained, sample_matrix)
+            for id, sample_matrix in enumerate(self.EOT_transforms):
+                # interpolation choices "NEAREST", "BILINEAR"
+                # self.another_constrained = tf.contrib.image.transform(self.constrained, sample_matrix)
+                self.another_masked_inter = tf.contrib.image.transform(self.masked_inter, 
+                                                                       sample_matrix,
+                                                                       interpolation='BILINEAR')
+                
+                self.another_shuru = tf.add(self.w,self.another_masked_inter)
+                self.another_constrained = tf.tanh(self.another_shuru)
+                
                 init_dict = {'yolo_model_input': self.another_constrained,
                              'yolo_mode': "reuse_model",
                              'yolo_disp_console': self.disp_console,
@@ -135,29 +153,29 @@ class ObjectDetectorAttacker:
 
         else:
             print("EOT mode disabled!")
-            
+
         # computer graph for norm 2 distance
         # init an ad example
         self.perturbation = self.x-self.constrained
         self.distance_L2 = tf.norm(self.perturbation, ord=2)
         self.punishment = tf.placeholder('float32',[1])
-        
+
         # non-smoothness
-        self.lala1 = self.musked_inter[0:-1,0:-1]
-        self.lala2 = self.musked_inter[1:,1:]
+        self.lala1 = self.masked_inter[0:-1,0:-1]
+        self.lala2 = self.masked_inter[1:,1:]
         self.sub_lala1_2 = self.lala1-self.lala2
         self.non_smoothness = tf.norm(self.sub_lala1_2, ord=2)
-        
+
         # loss is maxpooled confidence + distance_L2 + print smoothness
         self.loss = self.max_Cp+self.punishment*self.distance_L2+self.smoothness_punishment*self.non_smoothness
-        
+
         # set optimizer
         self.optimizer = tf.train.AdamOptimizer(1e-2)#GradientDescentOptimizerAdamOptimizer
         self.attackoperator = self.optimizer.minimize(self.loss,var_list=[self.inter])#,var_list=[self.adversary]
-        
+
         # init and load weights by variables
         self.sess.run(tf.global_variables_initializer())
-        
+
         # restore model variable
         saver = tf.train.Saver(MODEL_variables)
         saver.restore(self.sess,self.weights_file)
@@ -165,42 +183,72 @@ class ObjectDetectorAttacker:
 
         if self.disp_console : print("Loading complete!" + '\n')
 
-    def attack_from_file(self, filename, muskfilename):#,muskfilename
+    def attack_from_file(self, filename, maskfilename, logo_filename=None):
         if self.disp_console : print('Detect from ' + filename)
 
-        f = open(muskfilename)
+        f = open(maskfilename)
         dic = xmltodict.parse(f.read())
-        #str = json.dumps(dic)
 
         print("Input picture size:",dic['annotation']['size'])
-        
+
         img = cv2.imread(filename)
         print(type(img),img.shape)
-        musk = 0.000001*np.ones(shape=img.shape)
+        mask = 0.000001*np.ones(shape=img.shape)
 
-        print("Generating Musk...")
-        self.musk_list = dic['annotation']['object']
-        for _object in self.musk_list:
+        # if there is logo file, prepare logo_mask
+        if logo_filename is not None:
+            logopic = cv2.imread(logo_filename)
+            # flag indicates where the pixels' value will spared from ad perturbation
+            flag = 100
+            logo_mask = self.generate_logomask(logopic,
+                                               flag)
+
+        print("Generating Mask...")
+        self.mask_list = dic['annotation']['object']
+        resized_logo_mask_list = []
+        for _object in self.mask_list:
             xmin = int(_object['bndbox']['xmin'])
             ymin = int(_object['bndbox']['ymin'])
             xmax = int(_object['bndbox']['xmax'])
             ymax = int(_object['bndbox']['ymax'])
             print(xmin,ymin,xmax,ymax)
-            musk = self.generate_Musk(musk,xmin,ymin,xmax,ymax)
+            mask = self.generate_MaskArea(mask,
+                                          xmin,
+                                          ymin,
+                                          xmax,
+                                          ymax)
 
-        self.detect_from_cvmat(img, musk)
+            # if there is logo file, draw logo where there is flags
+            if logo_filename is not None:
+                mask, resized_logo_mask = self.add_logomask(mask,
+                                                            logo_mask,
+                                                            xmin,
+                                                            ymin,
+                                                            xmax,
+                                                            ymax)
+
+                resized_logo_mask_list.append(resized_logo_mask)
+
+        # usually the first area is what we need, when your make your mask you know
+        self.detect_from_cvmat(img, mask, logo_mask, resized_logo_mask_list[0])
     
-    def detect_from_cvmat(self, img, musk):
+    def detect_from_cvmat(self, img, mask, logo_mask=None, resized_logo_mask=None):
         s = time.time()
         self.h_img,self.w_img,_ = img.shape
+        
+        if logo_mask is not None and resized_logo_mask is not None:
+            img_resized_np = self.add_logo_on_input(img, logo_mask, resized_logo_mask)
+        
         img_resized = cv2.resize(img, (448, 448))
-        musk_resized = cv2.resize(musk,(448,448))
-        img_RGB = cv2.cvtColor(img_resized,cv2.COLOR_BGR2RGB)
-        img_resized_np = np.asarray( img_RGB )
+        mask_resized = cv2.resize(mask, (448,448))
+        
+        img_resized_np = np.asarray(img_resized)
         inputs = np.zeros((1,448,448,3),dtype='float32')   # ni ye ke yi yong np.newaxis
-        inputs_musk = np.zeros((1,448,448,3),dtype='float32')
+        inputs_mask = np.zeros((1,448,448,3),dtype='float32')
+        
         inputs[0] = (img_resized_np/255.0)*2.0-1.0
-        inputs_musk[0] = musk_resized
+        
+        inputs_mask[0] = mask_resized
         # image in numpy format
         self.inputs = inputs
         # hyperparameter to control two optimization objectives
@@ -212,7 +260,7 @@ class ObjectDetectorAttacker:
         # set original image and punishment
         in_dict = {self.x: inputs,
                    self.punishment: punishment,
-                   self.musk: inputs_musk,
+                   self.mask: inputs_mask,
                    self.smoothness_punishment: smoothness_punishment}
         
         # set fetch list
@@ -232,7 +280,39 @@ class ObjectDetectorAttacker:
         self.result = self.interpret_output(net_output[0][0])
         
         # reconstruct image from perturbation
-        ad_x=net_output[2]
+        self.save_np_as_jpg(net_output[2])
+        
+        print("Attack finished!")
+        
+        # choose to generate invisible clothe
+        user_input = "Yes"
+        while user_input!="No" and self.Do_you_want_ad_sticker is True:
+            user_input = input("Do you want an invisible clothe? Yes/No:")
+            if user_input=="Yes":
+                print("Ok!")
+                self.generate_sticker(reconstruct_img_np_squeezed, logo_mask, resized_logo_mask)
+                break
+            elif user_input=="No":
+                print("Bye-Bye!")
+                break
+            else:
+                print("Wrong command!")
+                user_input = input("Do you want an invisible clothe? Yes/No:")
+        
+        self.show_results(img, self.result)
+        
+        strtime = str(time.time()-s)
+        if self.disp_console : print('Elapsed time : ' + strtime + ' secs' + '\n')
+            
+    # save numpy pic as a jpg
+    def save_np_as_jpg(self, x):
+        '''
+        x is numpy array between (-1,1)
+        
+        reconstruct_img_np_squeezed is numpy array between (0,1)
+        '''
+        # reconstruct image from perturbation
+        ad_x=x
         ad_x_01=(ad_x/2.0)+0.5
         
         # bx.imshow only take value between 0 and 1
@@ -242,8 +322,7 @@ class ObjectDetectorAttacker:
         reconstruct_img_resized_np=(ad_x_squeezed+1.0)/2.0*255.0
         print("min and max in img(numpy form):",reconstruct_img_resized_np.min(),reconstruct_img_resized_np.max())
 
-        reconstruct_img_BGR= cv2.cvtColor(reconstruct_img_resized_np,cv2.COLOR_RGB2BGRA)
-        reconstruct_img_np=cv2.resize(reconstruct_img_BGR,(self.w_img,self.h_img))#reconstruct_img_BGR
+        reconstruct_img_np=cv2.resize(reconstruct_img_resized_np,(self.w_img,self.h_img))#reconstruct_img_BGR
         reconstruct_img_np_squeezed=np.squeeze(reconstruct_img_np)
 
         # write in sticker as jpg, idk how to write it in png. Help me!
@@ -257,45 +336,90 @@ class ObjectDetectorAttacker:
         else:
             print("Saving error!")
         
-        print("Attack finished!")
-        
-        # choose to generate invisible clothe
-        user_input = "Yes"
-        while user_input!="No" and self.Do_you_want_ad_sticker is True:
-            user_input = input("Do you want an invisible clothe? Yes/No:")
-            if user_input=="Yes":
-                print("Ok!")
-                self.generate_sticker(reconstruct_img_np_squeezed)
-                break
-            elif user_input=="No":
-                print("Bye-Bye!")
-                break
-            else:
-                print("Wrong command!")
-                user_input = input("Do you want an invisible clothe? Yes/No:")
-        
-        self.show_results(img, self.result)
-        
-        strtime = str(time.time()-s)
-        if self.disp_console : print('Elapsed time : ' + strtime + ' secs' + '\n')
+        return reconstruct_img_np_squeezed
     
-    # generate_sticker saved under result folder
-    def generate_sticker(self, pic_in_numpy_0_255):
+    # add logo on input
+    def add_logo_on_input(self, pic_in_numpy_0_255, logo_mask=None, resized_logo_mask=None):
         is_saved = None
         
-        self.sitcker_savedname = "sticker_"+self.whole_pic_savedname
-        _object = self.musk_list[0]
+        _object = self.mask_list[0]
         xmin = int(_object['bndbox']['xmin'])
         ymin = int(_object['bndbox']['ymin'])
         xmax = int(_object['bndbox']['xmax'])
         ymax = int(_object['bndbox']['ymax'])
         print(xmin,ymin,xmax,ymax)
         
+        if logo_mask is not None and resized_logo_mask is not None:
+            ad_area_center_x = (xmin+xmax)/2
+            ad_area_center_y = (ymin+ymax)/2
+
+            # cv2.resize only eats integer
+            resized_width = resized_logo_mask.shape[1]
+            resized_height = resized_logo_mask.shape[0]
+
+            paste_xmin = int(ad_area_center_x - resized_width/2)
+            paste_ymin = int(ad_area_center_y - resized_height/2)
+            paste_xmax = paste_xmin + resized_width
+            paste_ymax = paste_ymin + resized_height
+
+            for i in range(paste_xmin,paste_xmax):
+                for j in range(paste_ymin,paste_ymax):
+                    if resized_logo_mask[j-paste_ymin,i-paste_xmin,0]==0.000001:
+                        pic_in_numpy_0_255[j,i] = [255,255,255]
+
+        
         sticker_in_numpy_0_255 = pic_in_numpy_0_255[ymin:ymax, xmin:xmax]
-        # resized to US letter size
+        
         assert sticker_in_numpy_0_255 is not None
 
-        is_saved=cv2.imwrite(self.path+self.sitcker_savedname,sticker_in_numpy_0_255)
+        is_saved=cv2.imwrite('result/input.jpg',sticker_in_numpy_0_255)
+        if is_saved:
+            print("Sticker saved under:",'result/input.jpg')
+        else:
+            print("Sticker saving error")
+        
+        return pic_in_numpy_0_255
+    
+    # generate_sticker saved under result folder
+    def generate_sticker(self, pic_in_numpy_0_255, logo_mask=None, resized_logo_mask=None):
+        is_saved = None
+        
+        self.sitcker_savedname = "sticker_"+self.whole_pic_savedname
+        _object = self.mask_list[0]
+        xmin = int(_object['bndbox']['xmin'])
+        ymin = int(_object['bndbox']['ymin'])
+        xmax = int(_object['bndbox']['xmax'])
+        ymax = int(_object['bndbox']['ymax'])
+        print(xmin,ymin,xmax,ymax)
+        
+        sticker_in_numpy_0_255_original = pic_in_numpy_0_255[ymin:ymax, xmin:xmax]
+
+        resize_ratio = logo_mask.shape[0]/resized_logo_mask.shape[0]
+        
+        new_sticker_width = int(sticker_in_numpy_0_255_original.shape[1] * resize_ratio)
+        new_sticker_height = int(sticker_in_numpy_0_255_original.shape[0] * resize_ratio)
+        new_sticker = cv2.resize(sticker_in_numpy_0_255_original,(new_sticker_width,new_sticker_height))
+        
+        if logo_mask is not None and resized_logo_mask is not None:
+            ad_area_center_x = new_sticker_width/2
+            ad_area_center_y = new_sticker_height/2
+
+            # cv2.resize only eats integer
+            resized_height = logo_mask.shape[0]
+            resized_width = logo_mask.shape[1]
+
+            paste_xmin = int(ad_area_center_x - resized_width/2)
+            paste_ymin = int(ad_area_center_y - resized_height/2)
+            paste_xmax = paste_xmin + resized_width
+            paste_ymax = paste_ymin + resized_height
+            
+            for i in range(paste_xmin,paste_xmax):
+                for j in range(paste_ymin,paste_ymax):
+                    if logo_mask[j-paste_ymin,i-paste_xmin,0]==0.000001:
+                        new_sticker[j,i] = [255,255,255]
+        
+        assert new_sticker is not None
+        is_saved=cv2.imwrite(self.path+'HD_'+self.sitcker_savedname,new_sticker)
         if is_saved:
             print("Sticker saved under:",str(self.path))
         else:
@@ -303,30 +427,86 @@ class ObjectDetectorAttacker:
 
         return is_saved
     
-    # generate Musk
-    def generate_Musk(self,musk, xmin,ymin,xmax,ymax):
+    # generate mask
+    def generate_MaskArea(self,
+                          mask, 
+                          xmin,
+                          ymin,
+                          xmax,
+                          ymax):
+        """
+        make a mask where adversarial perturbed area
+        """
         for i in range(xmin,xmax):
             for j in range(ymin,ymax):
                 for channel in range(3):
-                    musk[j][i][channel] = 1
+                    mask[j][i][channel] = 1
 
-        return musk
+        return mask
+    
+    def generate_logomask(self,
+                          logopic,
+                          flag):
+        """
+        turn logopic into binary matrix logo_mask.
+        """
+        logo_mask = np.where(logopic>flag, 0.000001, 1)
 
-    def detect_from_crop_sample(self):
-        self.w_img = 640
-        self.h_img = 420
-        f = np.array(open('person_crop.txt','r').readlines(),dtype='float32')
-        inputs = np.zeros((1,448,448,3),dtype='float32')
-        for c in range(3):
-            for y in range(448):
-                for x in range(448):
-                    inputs[0,y,x,c] = f[c*448*448+y*448+x]
+        return logo_mask
+    
+    
+    def add_logomask(self,
+                     mask,
+                     logo_mask,
+                     xmin,
+                     ymin,
+                     xmax,
+                     ymax):
+        """
+        put logo_mask onto the center of the ready-to-perturbed area. haha.
+        """
+        ad_width = xmax - xmin
+        ad_height = ymax - ymin
+        
+        ad_area_center_x = (xmin+xmax)/2
+        ad_area_center_y = (ymin+ymax)/2
+        
+        ad_ratio = ad_width/ad_height
 
-        in_dict = {self.x: inputs}
-        net_output = self.sess.run(self.fc_19,feed_dict=in_dict)
-        self.boxes, self.probs = self.interpret_output(net_output[0])
-        img = cv2.imread('person.jpg')
-        self.show_results(self.boxes,img)
+        logo_height = logo_mask.shape[0]
+        logo_width = logo_mask.shape[1]
+        logo_ratio = logo_width/logo_height
+        
+        # make sure logo is contained by ad area
+        if ad_ratio > logo_ratio:
+            resize_ratio = ad_width/logo_height
+        else:
+            resize_ratio = ad_height/logo_width
+
+        # cv2.resize only eats integer
+        resized_height = int(logo_height*resize_ratio)
+        resized_width = int(logo_width*resize_ratio)
+        
+        resized_logo_mask = None
+        # skip cases where resize area is too small
+        if resized_width!=0 and resized_height!=0:
+            resized_logo_mask = cv2.resize(logo_mask, (resized_width,resized_height))
+            
+            paste_xmin = int(ad_area_center_x - resized_width/2)
+            paste_ymin = int(ad_area_center_y - resized_height/2)
+            paste_xmax = paste_xmin + resized_width
+            paste_ymax = paste_ymin + resized_height
+            
+            if (xmin+resized_height)<mask.shape[0] and (ymin+resized_width)<mask.shape[1]:
+                mask[paste_ymin:paste_ymax,paste_xmin:paste_xmax] = resized_logo_mask
+                # np.zeros([resized_height,resized_width,3])
+            else:
+                pass
+        else:
+            pass
+
+        return mask, resized_logo_mask
+
 
     def interpret_output(self,output):
         probs = np.zeros((7,7,2,20))
@@ -435,30 +615,23 @@ class ObjectDetectorAttacker:
         return intersection / (box1[2]*box1[3] + box2[2]*box2[3] - intersection)
 
     def attack(self):
-        if self.fromfile is not None and self.frommuskfile is not None:
-            self.attack_from_file(self.fromfile, self.frommuskfile)
-            
+        if self.fromfile is not None and self.frommaskfile is not None:
+            self.attack_from_file(self.fromfile, self.frommaskfile, self.fromlogofile)
+
         if self.fromfolder is not None:
             filename_list = os.listdir(self.fromfolder)
             # take pics name out and construct xml filename to read from
             for filename in filename_list:
                 pic_name = re.match(r'\d+.JPG', filename)
-                
+
                 if pic_name is not None:
                     self.overall_pics+=1
                     print("Pics number:",self.overall_pics,"The",pic_name[0], "!")
 
-                    pic_musk_name = pic_name[0][:-3]+"xml"
+                    pic_mask_name = pic_name[0][:-3]+"xml"
                     fromfile = self.fromfolder+"/"+pic_name[0]
-                    frommusk = self.fromfolder+"/"+pic_musk_name
+                    frommask = self.fromfolder+"/"+pic_mask_name
                     
-                    self.attack_from_file(fromfile, frommusk)
+                    self.attack_from_file(fromfile, frommask)
                     
             print("Attack success rate:", self.success/self.overall_pics)
-
-def main(argvs):
-    attacker = ObjectDetectorAttacker(argvs)
-    attacker.attack()
-    
-if __name__=='__main__':    
-    main(sys.argv)

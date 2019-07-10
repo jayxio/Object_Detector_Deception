@@ -13,6 +13,11 @@
 
 # weights
 *.ckpt
+*.pb
+*.meta
+*.config
+checkpoint
+saved_model
 
 # mask file
 *.xml
