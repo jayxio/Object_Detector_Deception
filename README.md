@@ -42,7 +42,7 @@ Best wishes!
 (1) Entering `./`
 
 (2) Run command:
-    `python YOLO_tiny_tf_attack.py -fromfile test/Darren.jpg -frommuskfile test/Darren.xml`
+    `python attack_model.py -fromfile test/Darren.jpg -frommuskfile test/Darren.xml`
 
 (3) Tuning the hyperparameter `self.punishment` and `attack steps` to control the optimization of the target.
 

@@ -13,8 +13,10 @@ import os
 import re
 
 from object_detectors.yolo_tiny_model import YOLO_tiny_model
+from object_detectors.yolo_tiny_model_updated import YOLO_tiny_model_updated
 
-class GIX_yolo_attack:
+
+class EOTB_attack:
     # init global variable
     model = None
     fromfile = None
@@ -28,6 +30,8 @@ class GIX_yolo_attack:
     Do_you_want_ad_sticker = True
     disp_console = True
     weights_file = 'weights/YOLO_tiny.ckpt'
+    # search step for a single attack
+    steps = 300
     alpha = 0.1
     threshold = 0.2
     iou_threshold = 0.5
@@ -46,7 +50,7 @@ class GIX_yolo_attack:
         self.argv_parser(argvs)
         self.build_model_attack_graph()
         
-    def argv_parser(self,argvs):
+    def argv_parser(self,argvs, ):
         for i in range(1,len(argvs),2):
             # read picture file
             if argvs[i] == '-fromfile' : self.fromfile = argvs[i+1]
@@ -79,13 +83,7 @@ class GIX_yolo_attack:
     def build_model_attack_graph(self):
         if self.disp_console : print("Building YOLO attack graph...")
 
-        if self.useEOT == True:
-            self.EOT_transforms = transformation.target_sample()
-        else:
-            pass
 
-        num_of_EOT_transforms = len(self.EOT_transforms)
-        print(f'EOT transform number: {num_of_EOT_transforms}')
         # x is the image
         self.x = tf.placeholder('float32',[1,448,448,3])
         self.mask = tf.placeholder('float32',[1,448,448,3])
@@ -100,10 +98,37 @@ class GIX_yolo_attack:
 
         # box constraints ensure self.x within(0,1)
         self.w = tf.atanh(self.x)
-
         # add mask
         self.masked_inter = tf.multiply(self.mask,self.inter)
-        self.shuru = tf.add(self.w,self.masked_inter)
+        
+        
+        # compute the EOT-transformed masked inter in a batch, 
+        if self.useEOT == True:
+            print("Building EOT Model graph!")
+            self.EOT_transforms = transformation.target_sample()
+            num_of_EOT_transforms = len(self.EOT_transforms)
+            print(f'EOT transform number: {num_of_EOT_transforms}')
+            
+
+            # broadcast self.masked_inter [1,448,448,3] into [num_of_EOT_transforms, 448, 448, 3]
+            self.masked_inter_batch = self.masked_inter
+            for i in range(num_of_EOT_transforms):
+                if i == num_of_EOT_transforms-1: break
+                self.masked_inter_batch = tf.concat([self.masked_inter_batch,self.masked_inter],0)
+
+            # interpolation choices "NEAREST", "BILINEAR"
+            self.masked_inter_batch = tf.contrib.image.transform(self.masked_inter_batch,
+                                                                 self.EOT_transforms,
+                                                                 interpolation='BILINEAR')
+
+            
+        else:
+            self.masked_inter_batch = self.masked_inter
+            print("EOT mode disabled!")
+
+        
+        # tf.add making self.w [1,448,448,3] broadcast into [num_of_EOT_transforms, 448, 448, 3]
+        self.shuru = tf.add(self.w,self.masked_inter_batch)
         self.constrained = tf.tanh(self.shuru)
         
         # create session
@@ -114,9 +139,9 @@ class GIX_yolo_attack:
                      'yolo_disp_console': self.disp_console,
                      'session': self.sess}
 
-        # create a yolo model
+        # init a model instance
         self.object_detector = self.model(init_dict)
-        self.Ctarget = self.object_detector.get_output_tensor()
+        self.C_target = self.object_detector.get_output_tensor()
 
         MODEL_variables = self.object_detector.get_yolo_variables()
         # Alternatives:
@@ -127,29 +152,6 @@ class GIX_yolo_attack:
         # unused
         MODEL_variables_name = [variable.name for variable in MODEL_variables]
 
-        # build graph to compute the largest Cp among all pictures using the for loop
-        # transform original picture over EOT
-        if self.useEOT == True:
-            print("Building EOT Model graph!")
-            for id, sample_matrix in enumerate(self.EOT_transforms):
-                # interpolation choices "NEAREST"(default), "BILINEAR"
-                self.another_constrained = tf.contrib.image.transform(self.constrained, 
-                                                                      sample_matrix)#,
-                                                                      #interpolation='BILINEAR')
-                
-                init_dict = {'yolo_model_input': self.another_constrained,
-                             'yolo_mode': "reuse_model",
-                             'yolo_disp_console': self.disp_console,
-                             'session': self.sess}
-
-                with tf.variable_scope("") as scope:# .reuse_variables()
-                    scope.reuse_variables()
-                    yolo_detector = YOLO_tiny_model(init_dict)
-                    self.another_Cp = yolo_detector.get_output_tensor()
-                self.Ctarget += self.another_Cp
-
-        else:
-            print("EOT mode disabled!")
 
         # computer graph for norm 2 distance
         # init an ad example
@@ -164,7 +166,7 @@ class GIX_yolo_attack:
         self.non_smoothness = tf.norm(self.sub_lala1_2, ord=2)
 
         # loss is maxpooled confidence + distance_L2 + print smoothness
-        self.loss = self.Ctarget+self.punishment*self.distance_L2+self.smoothness_punishment*self.non_smoothness
+        self.loss = self.C_target+self.punishment*self.distance_L2+self.smoothness_punishment*self.non_smoothness
 
         # set optimizer
         self.optimizer = tf.train.AdamOptimizer(1e-2)#GradientDescentOptimizerAdamOptimizer
@@ -251,8 +253,7 @@ class GIX_yolo_attack:
         # hyperparameter to control two optimization objectives
         punishment = np.array([0.01])
         smoothness_punishment = np.array([0.5])
-        # search step for a single attack
-        steps = 200
+
 
         # set original image and punishment
         in_dict = {self.x: inputs,
@@ -261,23 +262,24 @@ class GIX_yolo_attack:
                    self.smoothness_punishment: smoothness_punishment}
         
         # set fetch list
-        fetch_list = [self.yolo_detector.fc_19,
+        fetch_list = [self.object_detector.fc_19,
                       self.attackoperator,
                       self.constrained,
-                      self.Ctarget,
+                      self.C_target,
                       self.loss]
         
         # attack
         print("YOLO attack...")
-        for i in range(steps):
+        for i in range(self.steps):
             # fetch something in self(tf.Variable)
             net_output = self.sess.run(fetch_list, feed_dict=in_dict)
-            print("step:",i,"Confidence:",net_output[3],"Loss:",net_output[4])
+            print("step:",i,"Confidence:",net_output[3],"Loss:",net_output[4][0])
 
+            
         self.result = self.interpret_output(net_output[0][0])
         
         # reconstruct image from perturbation
-        reconstruct_img_np_squeezed = self.save_np_as_jpg(net_output[2])
+        reconstruct_img_np_squeezed = self.save_np_as_jpg(net_output[2][0])
         
         print("Attack finished!")
         
@@ -632,4 +634,3 @@ class GIX_yolo_attack:
                     self.attack_from_file(fromfile, frommask)
                     
             print("Attack success rate:", self.success/self.overall_pics)
-

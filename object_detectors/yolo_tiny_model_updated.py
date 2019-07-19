@@ -31,7 +31,7 @@ import sys
 import argparse
 import pdb
 
-class YOLO_tiny_model:
+class YOLO_tiny_model_updated:
     model_input = None
     mode = None
     disp_console = None
@@ -79,6 +79,17 @@ class YOLO_tiny_model:
         self.fc_17 = self.fc_layer(17,self.fc_16,4096,'Variable_20:0', 'Variable_21:0',flat=False,linear=False,mode=mode)
         #skip dropout_18
         self.fc_19 = self.fc_layer(19,self.fc_17,1470,'Variable_22:0', 'Variable_23:0',flat=False,linear=True,mode=mode)
+        
+        self.c = tf.reshape(self.fc_19[:,0:980],(self.fc_19[:,0:980].shape.as_list()[0],7,7,20))
+        self.s = tf.reshape(self.fc_19[:,980:1078],(self.fc_19[:,980:1078].shape.as_list()[0],7,7,2))
+
+        self.p1 = tf.multiply(self.c[:,:,:,14],self.s[:,:,:,0])
+        self.p2 = tf.multiply(self.c[:,:,:,14],self.s[:,:,:,1])
+        self.p = tf.stack([self.p1,self.p2],axis=0)
+        self.batch_p = tf.reduce_max(self.p,2)
+        Ctarget = tf.reduce_sum(self.batch_p)
+        # Ctarget = tf.reduce_sum(self.p)
+        '''
         self.c = tf.reshape(tf.slice(self.fc_19,[0,0],[1,980]),(7,7,20))
         self.s = tf.reshape(tf.slice(self.fc_19,[0,980],[1,98]),(7,7,2))
         #self.probs = tf.Variable(tf.ones(shape=[]))
@@ -94,8 +105,8 @@ class YOLO_tiny_model:
         #self.yan=tf.reduce_sum(self.probs)
         Cp = tf.reduce_max(self.p) # confidence for people
         # Cp = tf.reduce_sum(self.p)
-        
-        return Cp
+        '''
+        return Ctarget
     
     def init_variables(self, YOLO_variables):
         init = tf.global_variables_initializer()
