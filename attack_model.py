@@ -1,16 +1,9 @@
-import numpy as np
-import tensorflow as tf
-import cv2
-import time
+'''
+Author: Jay Xiong
+
+'''
+
 import sys
-import pdb
-import xmltodict
-import matplotlib.pyplot as plt
-from PIL import Image
-import time
-import transformation
-import os
-import re
 
 # choose attack method
 from attack_methods.gix_yolo_attack import GIX_yolo_attack

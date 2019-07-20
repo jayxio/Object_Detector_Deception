@@ -1,16 +1,16 @@
+'''
+Author: Jay Xiong
+
+
+'''
 import numpy as np
 import tensorflow as tf
 import cv2
 import time
-import sys
-import pdb
 import xmltodict
-import matplotlib.pyplot as plt
-from PIL import Image
 import time
 import transformation
-import os
-import re
+# import pdb
 
 
 class GIX_yolo_attack_alpha:
@@ -28,6 +28,7 @@ class GIX_yolo_attack_alpha:
     disp_console = True
     weights_file = 'weights/YOLO_tiny.ckpt'
     # search step for a single attack
+    learning_rate = 1e-2
     steps = 300
     alpha = 0.1
     threshold = 0.2
@@ -78,7 +79,7 @@ class GIX_yolo_attack_alpha:
                 else : self.disp_console = False
 
     def build_model_attack_graph(self):
-        if self.disp_console : print("Building YOLO attack graph...")
+        if self.disp_console : print("Building attack graph...")
 
 
         # x is the image
@@ -166,7 +167,7 @@ class GIX_yolo_attack_alpha:
         self.loss = self.C_target+self.punishment*self.distance_L2+self.smoothness_punishment*self.non_smoothness
 
         # set optimizer
-        self.optimizer = tf.train.AdamOptimizer(1e-2)#GradientDescentOptimizerAdamOptimizer
+        self.optimizer = tf.train.AdamOptimizer(self.learning_rate)#GradientDescentOptimizerAdamOptimizer
         self.attackoperator = self.optimizer.minimize(self.loss,var_list=[self.inter])#,var_list=[self.adversary]
 
         # init and load weights by variables
@@ -180,7 +181,7 @@ class GIX_yolo_attack_alpha:
         if self.disp_console : print("Loading complete!" + '\n')
 
     def attack_from_file(self, filename, maskfilename, logo_filename=None):
-        if self.disp_console : print('Detect from ' + filename)
+        if self.disp_console : print('Generating from ' + filename)
 
         f = open(maskfilename)
         dic = xmltodict.parse(f.read())
@@ -233,20 +234,20 @@ class GIX_yolo_attack_alpha:
         self.h_img,self.w_img,_ = img.shape
         
         if logo_mask is not None and resized_logo_mask is not None:
-            img_resized_np = self.add_logo_on_input(img, logo_mask, resized_logo_mask)
+            img_with_logo = self.add_logo_on_input(img, logo_mask, resized_logo_mask)
+        else:
+            img_with_logo = img
         
-        img_resized = cv2.resize(img, (448, 448))
+        img_resized = cv2.resize(img_with_logo, (448, 448))
         mask_resized = cv2.resize(mask, (448,448))
         
-        img_resized_np = np.asarray(img_resized)
-        inputs = np.zeros((1,448,448,3),dtype='float32')   # ni ye ke yi yong np.newaxis
+        inputs = np.zeros((1,448,448,3),dtype='float32')
         inputs_mask = np.zeros((1,448,448,3),dtype='float32')
-        
-        inputs[0] = (img_resized_np/255.0)*2.0-1.0
-        
+
+        # just like np.newaxis, expanding a dimension at the front
+        inputs[0] = (img_resized/255.0)*2.0-1.0
         inputs_mask[0] = mask_resized
-        # image in numpy format
-        self.inputs = inputs
+
         # hyperparameter to control two optimization objectives
         punishment = np.array([0.01])
         smoothness_punishment = np.array([0.5])
@@ -338,6 +339,8 @@ class GIX_yolo_attack_alpha:
     def add_logo_on_input(self, pic_in_numpy_0_255, logo_mask=None, resized_logo_mask=None):
         is_saved = None
         
+        # copy a new array out
+        pic_in_numpy_0_255_copy = np.array(pic_in_numpy_0_255)
         _object = self.mask_list[0]
         xmin = int(_object['bndbox']['xmin'])
         ymin = int(_object['bndbox']['ymin'])
@@ -361,10 +364,10 @@ class GIX_yolo_attack_alpha:
             for i in range(paste_xmin,paste_xmax):
                 for j in range(paste_ymin,paste_ymax):
                     if resized_logo_mask[j-paste_ymin,i-paste_xmin,0]==0.000001:
-                        pic_in_numpy_0_255[j,i] = [255,255,255]
+                        pic_in_numpy_0_255_copy[j,i] = [255,255,255]
 
         
-        sticker_in_numpy_0_255 = pic_in_numpy_0_255[ymin:ymax, xmin:xmax]
+        sticker_in_numpy_0_255 = pic_in_numpy_0_255_copy[ymin:ymax, xmin:xmax]
         
         assert sticker_in_numpy_0_255 is not None
 
@@ -374,7 +377,7 @@ class GIX_yolo_attack_alpha:
         else:
             print("Sticker saving error")
         
-        return pic_in_numpy_0_255
+        return pic_in_numpy_0_255_copy
     
     # generate_sticker saved under result folder
     def generate_sticker(self, pic_in_numpy_0_255, logo_mask=None, resized_logo_mask=None):

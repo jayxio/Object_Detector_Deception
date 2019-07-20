@@ -1,19 +1,16 @@
+'''
+Author: Jay Xiong
+
+
+'''
 import numpy as np
 import tensorflow as tf
 import cv2
 import time
-import sys
-import pdb
 import xmltodict
-import matplotlib.pyplot as plt
-from PIL import Image
 import time
 import transformation
-import os
-import re
-
-from object_detectors.yolo_tiny_model import YOLO_tiny_model
-from object_detectors.yolo_tiny_model_updated import YOLO_tiny_model_updated
+# import pdb
 
 
 class EOTB_attack:
@@ -31,6 +28,7 @@ class EOTB_attack:
     disp_console = True
     weights_file = 'weights/YOLO_tiny.ckpt'
     # search step for a single attack
+    learning_rate = 1e-2
     steps = 300
     alpha = 0.1
     threshold = 0.2
@@ -81,7 +79,7 @@ class EOTB_attack:
                 else : self.disp_console = False
 
     def build_model_attack_graph(self):
-        if self.disp_console : print("Building YOLO attack graph...")
+        if self.disp_console : print("Building attack graph...")
 
 
         # x is the image
@@ -169,7 +167,7 @@ class EOTB_attack:
         self.loss = self.C_target+self.punishment*self.distance_L2+self.smoothness_punishment*self.non_smoothness
 
         # set optimizer
-        self.optimizer = tf.train.AdamOptimizer(1e-2)#GradientDescentOptimizerAdamOptimizer
+        self.optimizer = tf.train.AdamOptimizer(self.learning_rate)#GradientDescentOptimizerAdamOptimizer
         self.attackoperator = self.optimizer.minimize(self.loss,var_list=[self.inter])#,var_list=[self.adversary]
 
         # init and load weights by variables
@@ -182,17 +180,23 @@ class EOTB_attack:
 
         if self.disp_console : print("Loading complete!" + '\n')
 
-    def attack_from_file(self, filename, maskfilename, logo_filename=None):
-        if self.disp_console : print('Detect from ' + filename)
+    def attack_from_file(self, image_folder, maskfilename, logo_filename=None):
+        if self.disp_console : print('Generating from ' + image_folder)
 
         f = open(maskfilename)
         dic = xmltodict.parse(f.read())
 
         print("Input picture size:",dic['annotation']['size'])
 
-        img = cv2.imread(filename)
-        print(type(img),img.shape)
-        mask = 0.000001*np.ones(shape=img.shape)
+        img_list = []
+        filenames = os.listdir(image_folder)
+        for filename in filenames:
+            img = cv2.imread(filename)
+            img_list.append(img)
+
+        # record scale of the orginal images
+        self.h_img, self.w_img, self.d_img = img_list[0].shape   
+        mask = 0.000001*np.ones(shape=img_list[0].shape)
 
         # if there is logo file, prepare logo_mask
         if logo_filename is not None:
@@ -229,48 +233,47 @@ class EOTB_attack:
                 resized_logo_mask_list.append(resized_logo_mask)
 
         # usually the first area is what we need, when your make your mask you know
-        self.attack_optimize(img, mask, logo_mask, resized_logo_mask_list[0])
+        self.attack_optimize(img_list, mask, logo_mask, resized_logo_mask_list[0])
     
-    def attack_optimize(self, img, mask, logo_mask=None, resized_logo_mask=None):
+    def attack_optimize(self, img_list, mask, logo_mask=None, resized_logo_mask=None):
         s = time.time()
-        self.h_img,self.w_img,_ = img.shape
-        
-        if logo_mask is not None and resized_logo_mask is not None:
-            img_resized_np = self.add_logo_on_input(img, logo_mask, resized_logo_mask)
-        
-        img_resized = cv2.resize(img, (448, 448))
-        mask_resized = cv2.resize(mask, (448,448))
-        
-        img_resized_np = np.asarray(img_resized)
-        inputs = np.zeros((1,448,448,3),dtype='float32')   # ni ye ke yi yong np.newaxis
-        inputs_mask = np.zeros((1,448,448,3),dtype='float32')
-        
-        inputs[0] = (img_resized_np/255.0)*2.0-1.0
-        
-        inputs_mask[0] = mask_resized
-        # image in numpy format
-        self.inputs = inputs
-        # hyperparameter to control two optimization objectives
-        punishment = np.array([0.01])
-        smoothness_punishment = np.array([0.5])
 
-
-        # set original image and punishment
-        in_dict = {self.x: inputs,
-                   self.punishment: punishment,
-                   self.mask: inputs_mask,
-                   self.smoothness_punishment: smoothness_punishment}
-        
         # set fetch list
         fetch_list = [self.object_detector.fc_19,
                       self.attackoperator,
                       self.constrained,
                       self.C_target,
                       self.loss]
-        
+
         # attack
         print("YOLO attack...")
-        for i in range(self.steps):
+        for i in range(self.steps):        
+            if logo_mask is not None and resized_logo_mask is not None:
+                img_with_logo = self.add_logo_on_input(img_list[i%len(img_list)], logo_mask, resized_logo_mask)
+            else:
+                img_with_logo = img_list[i%len(img_list)]
+
+            img_resized = cv2.resize(img_with_logo, (448, 448))
+            mask_resized = cv2.resize(mask, (448,448))
+
+            inputs = np.zeros((1,448,448,3),dtype='float32')   
+            inputs_mask = np.zeros((1,448,448,3),dtype='float32')
+
+            # just like np.newaxis, expanding a dimension at the front
+            inputs[0] = (img_resized_np/255.0)*2.0-1.0
+            inputs_mask[0] = mask_resized
+
+            # hyperparameter to control two optimization objectives
+            punishment = np.array([0.01])
+            smoothness_punishment = np.array([0.5])
+
+
+            # set original image and punishment
+            in_dict = {self.x: inputs,
+                       self.punishment: punishment,
+                       self.mask: inputs_mask,
+                       self.smoothness_punishment: smoothness_punishment}
+
             # fetch something in self(tf.Variable)
             net_output = self.sess.run(fetch_list, feed_dict=in_dict)
             print("step:",i,"Confidence:",net_output[3],"Loss:",net_output[4][0])
@@ -341,6 +344,8 @@ class EOTB_attack:
     def add_logo_on_input(self, pic_in_numpy_0_255, logo_mask=None, resized_logo_mask=None):
         is_saved = None
         
+        # copy a new array out
+        pic_in_numpy_0_255_copy = np.array(pic_in_numpy_0_255)
         _object = self.mask_list[0]
         xmin = int(_object['bndbox']['xmin'])
         ymin = int(_object['bndbox']['ymin'])
@@ -364,10 +369,10 @@ class EOTB_attack:
             for i in range(paste_xmin,paste_xmax):
                 for j in range(paste_ymin,paste_ymax):
                     if resized_logo_mask[j-paste_ymin,i-paste_xmin,0]==0.000001:
-                        pic_in_numpy_0_255[j,i] = [255,255,255]
+                        pic_in_numpy_0_255_copy[j,i] = [255,255,255]
 
         
-        sticker_in_numpy_0_255 = pic_in_numpy_0_255[ymin:ymax, xmin:xmax]
+        sticker_in_numpy_0_255 = pic_in_numpy_0_255_copy[ymin:ymax, xmin:xmax]
         
         assert sticker_in_numpy_0_255 is not None
 
@@ -377,7 +382,7 @@ class EOTB_attack:
         else:
             print("Sticker saving error")
         
-        return pic_in_numpy_0_255
+        return pic_in_numpy_0_255_copy
     
     # generate_sticker saved under result folder
     def generate_sticker(self, pic_in_numpy_0_255, logo_mask=None, resized_logo_mask=None):

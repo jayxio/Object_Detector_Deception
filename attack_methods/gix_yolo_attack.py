@@ -1,18 +1,18 @@
+'''
+Author: Jay Xiong
+
+
+'''
+
 import numpy as np
 import tensorflow as tf
 import cv2
 import time
-import sys
-import pdb
 import xmltodict
-import matplotlib.pyplot as plt
-from PIL import Image
 import time
 import transformation
-import os
-import re
+# import pdb
 
-from object_detectors.yolo_tiny_model import YOLO_tiny_model
 
 class GIX_yolo_attack:
     # init global variable
