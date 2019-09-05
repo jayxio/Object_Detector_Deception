@@ -1,64 +1,74 @@
 '''
-Author: Jay Xiong
-
+This is an implementation for phycisal attack on test distribution.
 
 '''
 import numpy as np
-import tensorflow as tf
 import cv2
+import tensorflow as tf
+
 import time
-import xmltodict
-import time
-import transformation
-# import pdb
+import os
+
+from EOT_simulation import transformation
+from attack_methods.base_logic import ODD_logic
+import pdb
 
 
-class EOTB_attack:
-    # init global variable
-    model = None
-    fromfile = None
-    fromfolder = None
-    tofile_img = 'test/output.jpg'
-    tofile_txt = 'test/output.txt'
-    imshow = False
-    filewrite_img = False
-    filewrite_txt = False
-    useEOT = True
-    Do_you_want_ad_sticker = True
-    disp_console = True
-    weights_file = 'weights/YOLO_tiny.ckpt'
-    # search step for a single attack
-    learning_rate = 1e-2
-    steps = 300
-    alpha = 0.1
-    threshold = 0.2
-    iou_threshold = 0.5
-    num_class = 20
-    num_box = 2
-    grid_size = 7
-    classes =  ["aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train","tvmonitor"]
-
-    w_img = 640
-    h_img = 480
-
-    def __init__(self, model, argvs = []):
-        self.model = model
-        self.success = 0
-        self.overall_pics = 0
-        self.argv_parser(argvs)
-        self.build_model_attack_graph()
+class EOTB_attack(ODD_logic):
+    def __init__(self, model):
+        super(EOTB_attack, self).__init__(model)
+        # init global variable
+        self.filewrite_img = False
+        self.filewrite_txt = False
+        self.tofile_img = os.path.join(self.path,'output.jpg')
+        self.tofile_txt = os.path.join(self.path,'output.txt')
         
-    def argv_parser(self,argvs, ):
+        self.imshow = False
+        self.useEOT = True
+        self.Do_you_want_ad_sticker = True
+        self.weights_file = 'weights/YOLO_tiny.ckpt'
+        
+        # optimization settings
+        self.learning_rate = 1e-2
+        self.steps = 4
+        self.alpha = 0.1
+        self.threshold = 0.2
+        self.iou_threshold = 0.5
+        self.num_class = 20
+        self.num_box = 2
+        self.grid_size = 7
+        self.classes =  ["aeroplane",
+                         "bicycle", 
+                         "bird", 
+                         "boat", 
+                         "bottle", 
+                         "bus", 
+                         "car", 
+                         "cat", 
+                         "chair", 
+                         "cow", 
+                         "diningtable", 
+                         "dog", 
+                         "horse", 
+                         "motorbike", 
+                         "person", 
+                         "pottedplant", 
+                         "sheep", 
+                         "sofa", 
+                         "train",
+                         "tvmonitor"]
+
+    def argv_parser(self, argvs):
         for i in range(1,len(argvs),2):
             # read picture file
             if argvs[i] == '-fromfile' : self.fromfile = argvs[i+1]
             if argvs[i] == '-fromfolder' : self.fromfolder = argvs[i+1]
             if argvs[i] == '-frommaskfile' : self.frommaskfile = argvs[i+1]
-            if argvs[i] == '-fromlogofile' : 
+            if argvs[i] == '-fromlogofile' :
                 self.fromlogofile = argvs[i+1]
             else:
                 self.fromlogofile = None
-                
+
             if argvs[i] == '-tofile_img' : self.tofile_img = argvs[i+1] ; self.filewrite_img = True
             if argvs[i] == '-tofile_txt' : self.tofile_txt = argvs[i+1] ; self.filewrite_txt = True
             
@@ -80,15 +90,28 @@ class EOTB_attack:
 
     def build_model_attack_graph(self):
         if self.disp_console : print("Building attack graph...")
+        # compute the EOT-transformed masked inter in a batch, 
+        if self.useEOT == True:
+            print("Building EOT Model graph!")
+            self.EOT_transforms = transformation.target_sample()
+            self.num_of_EOT_transforms = len(self.EOT_transforms)
+            print(f'EOT transform number: {self.num_of_EOT_transforms}')
 
 
         # x is the image
-        self.x = tf.placeholder('float32',[1,448,448,3])
+        self.x = tf.placeholder('float32',[self.num_of_EOT_transforms,448,448,3])
         self.mask = tf.placeholder('float32',[1,448,448,3])
 
         self.punishment = tf.placeholder('float32',[1])
         self.smoothness_punishment=tf.placeholder('float32',[1])
-        init_inter = tf.constant_initializer(0.001*np.random.random([1,448,448,3]))
+        
+        # original
+        # init_inter = tf.constant_initializer(0.001*np.random.random([1,448,448,3]))
+        
+        # improved
+        # think of it, we want ad sticker starts at somewhere easy
+        init_inter = tf.constant_initializer(0.7*np.random.normal(scale=0.8,size=[1,448,448,3]))
+        
         self.inter = tf.get_variable(name='inter',
                                      shape=[1,448,448,3],
                                      dtype=tf.float32,
@@ -102,16 +125,10 @@ class EOTB_attack:
         
         # compute the EOT-transformed masked inter in a batch, 
         if self.useEOT == True:
-            print("Building EOT Model graph!")
-            self.EOT_transforms = transformation.target_sample()
-            num_of_EOT_transforms = len(self.EOT_transforms)
-            print(f'EOT transform number: {num_of_EOT_transforms}')
-            
-
             # broadcast self.masked_inter [1,448,448,3] into [num_of_EOT_transforms, 448, 448, 3]
             self.masked_inter_batch = self.masked_inter
-            for i in range(num_of_EOT_transforms):
-                if i == num_of_EOT_transforms-1: break
+            for i in range(self.num_of_EOT_transforms):
+                if i == self.num_of_EOT_transforms-1: break
                 self.masked_inter_batch = tf.concat([self.masked_inter_batch,self.masked_inter],0)
 
             # interpolation choices "NEAREST", "BILINEAR"
@@ -119,12 +136,11 @@ class EOTB_attack:
                                                                  self.EOT_transforms,
                                                                  interpolation='BILINEAR')
 
-            
+
         else:
             self.masked_inter_batch = self.masked_inter
             print("EOT mode disabled!")
 
-        
         # tf.add making self.w [1,448,448,3] broadcast into [num_of_EOT_transforms, 448, 448, 3]
         self.shuru = tf.add(self.w,self.masked_inter_batch)
         self.constrained = tf.tanh(self.shuru)
@@ -163,12 +179,12 @@ class EOTB_attack:
         self.sub_lala1_2 = self.lala1-self.lala2
         self.non_smoothness = tf.norm(self.sub_lala1_2, ord=2)
 
-        # loss is maxpooled confidence + distance_L2 + print smoothness
+        # loss is maxpooled sum confidence from batch dimension + distance_L2 + print smoothness
         self.loss = self.C_target+self.punishment*self.distance_L2+self.smoothness_punishment*self.non_smoothness
 
         # set optimizer
         self.optimizer = tf.train.AdamOptimizer(self.learning_rate)#GradientDescentOptimizerAdamOptimizer
-        self.attackoperator = self.optimizer.minimize(self.loss,var_list=[self.inter])#,var_list=[self.adversary]
+        self.attackoperator = self.optimizer.minimize(self.loss,var_list=[self.inter])
 
         # init and load weights by variables
         self.sess.run(tf.global_variables_initializer())
@@ -180,92 +196,48 @@ class EOTB_attack:
 
         if self.disp_console : print("Loading complete!" + '\n')
 
-    def attack_from_file(self, image_folder, maskfilename, logo_filename=None):
-        if self.disp_console : print('Generating from ' + image_folder)
 
-        f = open(maskfilename)
-        dic = xmltodict.parse(f.read())
 
-        print("Input picture size:",dic['annotation']['size'])
-
-        img_list = []
-        filenames = os.listdir(image_folder)
-        for filename in filenames:
-            img = cv2.imread(filename)
-            img_list.append(img)
-
-        # record scale of the orginal images
-        self.h_img, self.w_img, self.d_img = img_list[0].shape   
-        mask = 0.000001*np.ones(shape=img_list[0].shape)
-
-        # if there is logo file, prepare logo_mask
-        if logo_filename is not None:
-            logopic = cv2.imread(logo_filename)
-            # flag indicates where the pixels' value will spared from ad perturbation
-            flag = 100
-            logo_mask = self.generate_logomask(logopic,
-                                               flag)
-
-        print("Generating Mask...")
-        self.mask_list = dic['annotation']['object']
-        resized_logo_mask_list = []
-        for _object in self.mask_list:
-            xmin = int(_object['bndbox']['xmin'])
-            ymin = int(_object['bndbox']['ymin'])
-            xmax = int(_object['bndbox']['xmax'])
-            ymax = int(_object['bndbox']['ymax'])
-            print(xmin,ymin,xmax,ymax)
-            mask = self.generate_MaskArea(mask,
-                                          xmin,
-                                          ymin,
-                                          xmax,
-                                          ymax)
-
-            # if there is logo file, draw logo where there is flags
-            if logo_filename is not None:
-                mask, resized_logo_mask = self.add_logomask(mask,
-                                                            logo_mask,
-                                                            xmin,
-                                                            ymin,
-                                                            xmax,
-                                                            ymax)
-
-                resized_logo_mask_list.append(resized_logo_mask)
-
-        # usually the first area is what we need, when your make your mask you know
-        self.attack_optimize(img_list, mask, logo_mask, resized_logo_mask_list[0])
-    
     def attack_optimize(self, img_list, mask, logo_mask=None, resized_logo_mask=None):
         s = time.time()
 
         # set fetch list
-        fetch_list = [self.object_detector.fc_19,
-                      self.attackoperator,
-                      self.constrained,
-                      self.C_target,
-                      self.loss]
+        fetch_list = [self.object_detector.fc_19, # fetch_list[0] is for user interpretation
+                      self.attackoperator,        # controlling attack loss
+                      self.constrained,           # picture matrix to be reconstructed
+                      self.C_target,              # for interpreting attack process
+                      self.loss]                  # for interpreting attack process
+
 
         # attack
-        print("YOLO attack...")
-        for i in range(self.steps):        
-            if logo_mask is not None and resized_logo_mask is not None:
-                img_with_logo = self.add_logo_on_input(img_list[i%len(img_list)], logo_mask, resized_logo_mask)
-            else:
-                img_with_logo = img_list[i%len(img_list)]
+        print("Adversarial attack...")
+        
+        inputs = np.zeros((self.num_of_EOT_transforms,448,448,3),dtype='float32')   
+        inputs_mask = np.zeros((1,448,448,3),dtype='float32')
+        mask_resized = cv2.resize(mask, (448,448))
+        inputs_mask[0] = mask_resized
+        
+        # hyperparameter to control two optimization objectives
+        punishment = np.array([0.01])
+        smoothness_punishment = np.array([0.5])
+        
+        # if you want
+        Target_Loss = []
+        Image_Loss = []
+        # np.random.shuffle(img_list)
+        for i in range(self.steps):
+            # prepare attack batch
+            for j in range(self.num_of_EOT_transforms):
+                choose = np.random.randint(len(img_list))
+                # print(img_list[choose][0])
+                img_with_logo = self._init_sticker_area(img_list[choose][1], 
+                                                       logo_mask, 
+                                                       resized_logo_mask)
 
-            img_resized = cv2.resize(img_with_logo, (448, 448))
-            mask_resized = cv2.resize(mask, (448,448))
+                img_resized = cv2.resize(img_with_logo, (448, 448))
 
-            inputs = np.zeros((1,448,448,3),dtype='float32')   
-            inputs_mask = np.zeros((1,448,448,3),dtype='float32')
-
-            # just like np.newaxis, expanding a dimension at the front
-            inputs[0] = (img_resized_np/255.0)*2.0-1.0
-            inputs_mask[0] = mask_resized
-
-            # hyperparameter to control two optimization objectives
-            punishment = np.array([0.01])
-            smoothness_punishment = np.array([0.5])
+                # just like np.newaxis, expanding a dimension at the front
+                inputs[j] = (img_resized/255.0)*2.0-1.0
 
 
             # set original image and punishment
@@ -276,74 +248,28 @@ class EOTB_attack:
 
             # fetch something in self(tf.Variable)
             net_output = self.sess.run(fetch_list, feed_dict=in_dict)
-            print("step:",i,"Confidence:",net_output[3],"Loss:",net_output[4][0])
-
+            print(f"step: {i}, Target Loss: {net_output[3]}, Image Loss: {net_output[4][0]-net_output[3]}")
+            Target_Loss.append(net_output[3])
+            Image_Loss.append(net_output[4][0]-net_output[3])
             
-        self.result = self.interpret_output(net_output[0][0])
-        
-        # reconstruct image from perturbation
-        reconstruct_img_np_squeezed = self.save_np_as_jpg(net_output[2][0])
-        
-        print("Attack finished!")
-        
-        # choose to generate invisible clothe
-        user_input = "Yes"
-        while user_input!="No" and self.Do_you_want_ad_sticker is True:
-            user_input = input("Do you want an invisible clothe? Yes/No:")
-            if user_input=="Yes":
-                print("Ok!")
-                self.generate_sticker(reconstruct_img_np_squeezed, logo_mask, resized_logo_mask)
-                break
-            elif user_input=="No":
-                print("Bye-Bye!")
-                break
-            else:
-                print("Wrong command!")
-                user_input = input("Do you want an invisible clothe? Yes/No:")
-        
-        self.show_results(img, self.result)
-        
+            ##tmp code
+            # adsticker = self._save_np_as_jpg(str(i)+'_whole_pic.jpg', net_output[2][0])
+            ##
+
         strtime = str(time.time()-s)
         if self.disp_console : print('Elapsed time : ' + strtime + ' secs' + '\n')
-            
-    # save numpy pic as a jpg
-    def save_np_as_jpg(self, x):
-        '''
-        x is numpy array between (-1,1)
-        
-        reconstruct_img_np_squeezed is numpy array between (0,1)
-        '''
-        # reconstruct image from perturbation
-        ad_x=x
-        ad_x_01=(ad_x/2.0)+0.5
-        
-        # bx.imshow only take value between 0 and 1
-        squeezed=np.squeeze(ad_x_01)
+        print("Attack finished!")
 
-        ad_x_squeezed=np.squeeze(ad_x)
-        reconstruct_img_resized_np=(ad_x_squeezed+1.0)/2.0*255.0
-        print("min and max in img(numpy form):",reconstruct_img_resized_np.min(),reconstruct_img_resized_np.max())
-
-        reconstruct_img_np=cv2.resize(reconstruct_img_resized_np,(self.w_img,self.h_img))#reconstruct_img_BGR
-        reconstruct_img_np_squeezed=np.squeeze(reconstruct_img_np)
-
-        # write in sticker as jpg, idk how to write it in png. Help me!
-        self.whole_pic_savedname=str(self.overall_pics)+".jpg" # time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())+".jpg"
-
-        self.path = "./result/"
+        result = self._interpret_output(net_output[0][0])
+        self.show_results(img_with_logo, result)
         
-        is_saved=cv2.imwrite(self.path+self.whole_pic_savedname,reconstruct_img_np_squeezed)
-        if is_saved:
-            print("Result saved under: ",self.path+self.whole_pic_savedname)
-        else:
-            print("Saving error!")
-        
-        return reconstruct_img_np_squeezed
-    
+        return net_output[2][0]
+
+
     # add logo on input
-    def add_logo_on_input(self, pic_in_numpy_0_255, logo_mask=None, resized_logo_mask=None):
+    def _init_sticker_area(self, pic_in_numpy_0_255, logo_mask=None, resized_logo_mask=None):
         is_saved = None
-        
+
         # copy a new array out
         pic_in_numpy_0_255_copy = np.array(pic_in_numpy_0_255)
         _object = self.mask_list[0]
@@ -351,8 +277,7 @@ class EOTB_attack:
         ymin = int(_object['bndbox']['ymin'])
         xmax = int(_object['bndbox']['xmax'])
         ymax = int(_object['bndbox']['ymax'])
-        print(xmin,ymin,xmax,ymax)
-        
+
         if logo_mask is not None and resized_logo_mask is not None:
             ad_area_center_x = (xmin+xmax)/2
             ad_area_center_y = (ymin+ymax)/2
@@ -366,162 +291,37 @@ class EOTB_attack:
             paste_xmax = paste_xmin + resized_width
             paste_ymax = paste_ymin + resized_height
 
+            # can also write as np.where(cond, v1, v2)
             for i in range(paste_xmin,paste_xmax):
                 for j in range(paste_ymin,paste_ymax):
-                    if resized_logo_mask[j-paste_ymin,i-paste_xmin,0]==0.000001:
-                        pic_in_numpy_0_255_copy[j,i] = [255,255,255]
+                    if resized_logo_mask[j-paste_ymin,i-paste_xmin,0]==self.very_small:
+                        # plot logo
+                        pic_in_numpy_0_255_copy[j,i] = 255
 
-        
-        sticker_in_numpy_0_255 = pic_in_numpy_0_255_copy[ymin:ymax, xmin:xmax]
-        
-        assert sticker_in_numpy_0_255 is not None
+        # uniform base color of the ad_sticker area
+        # balance between printability and constrast
+        # rand = (np.random.normal(loc=0.5, scale=0.1, size=pic_in_numpy_0_255_copy[ymin:ymax, xmin:xmax].shape)/2)*255
+        # rand_int = rand.astype('int')
+        # pic_in_numpy_0_255_copy[ymin:ymax, xmin:xmax] = rand_int
 
-        is_saved=cv2.imwrite('result/input.jpg',sticker_in_numpy_0_255)
-        if is_saved:
-            print("Sticker saved under:",'result/input.jpg')
-        else:
-            print("Sticker saving error")
+        pic_in_numpy_0_255_copy[ymin:ymax, xmin:xmax] = [164, 83, 57] # a rgb point inside CMYK color space
         
         return pic_in_numpy_0_255_copy
+
+    def _iou(self,box1,box2):
+        tb = min(box1[0]+0.5*box1[2],box2[0]+0.5*box2[2])-max(box1[0]-0.5*box1[2],box2[0]-0.5*box2[2])
+        lr = min(box1[1]+0.5*box1[3],box2[1]+0.5*box2[3])-max(box1[1]-0.5*box1[3],box2[1]-0.5*box2[3])
+        if tb < 0 or lr < 0 : intersection = 0
+        else : intersection =  tb*lr
+        return intersection / (box1[2]*box1[3] + box2[2]*box2[3] - intersection)
     
-    # generate_sticker saved under result folder
-    def generate_sticker(self, pic_in_numpy_0_255, logo_mask=None, resized_logo_mask=None):
-        is_saved = None
-        
-        self.sitcker_savedname = "sticker_"+self.whole_pic_savedname
-        _object = self.mask_list[0]
-        xmin = int(_object['bndbox']['xmin'])
-        ymin = int(_object['bndbox']['ymin'])
-        xmax = int(_object['bndbox']['xmax'])
-        ymax = int(_object['bndbox']['ymax'])
-        print(xmin,ymin,xmax,ymax)
-        
-        sticker_in_numpy_0_255_original = pic_in_numpy_0_255[ymin:ymax, xmin:xmax]
-
-        resize_ratio = logo_mask.shape[0]/resized_logo_mask.shape[0]
-        
-        new_sticker_width = int(sticker_in_numpy_0_255_original.shape[1] * resize_ratio)
-        new_sticker_height = int(sticker_in_numpy_0_255_original.shape[0] * resize_ratio)
-        new_sticker = cv2.resize(sticker_in_numpy_0_255_original,(new_sticker_width,new_sticker_height))
-        
-        if logo_mask is not None and resized_logo_mask is not None:
-            ad_area_center_x = new_sticker_width/2
-            ad_area_center_y = new_sticker_height/2
-
-            # cv2.resize only eats integer
-            resized_height = logo_mask.shape[0]
-            resized_width = logo_mask.shape[1]
-
-            paste_xmin = int(ad_area_center_x - resized_width/2)
-            paste_ymin = int(ad_area_center_y - resized_height/2)
-            paste_xmax = paste_xmin + resized_width
-            paste_ymax = paste_ymin + resized_height
-            
-            for i in range(paste_xmin,paste_xmax):
-                for j in range(paste_ymin,paste_ymax):
-                    if logo_mask[j-paste_ymin,i-paste_xmin,0]==0.000001:
-                        new_sticker[j,i] = [255,255,255]
-        
-        assert new_sticker is not None
-        is_saved=cv2.imwrite(self.path+'HD_'+self.sitcker_savedname,new_sticker)
-        if is_saved:
-            print("Sticker saved under:",str(self.path))
-        else:
-            print("Sticker saving error")
-
-        return is_saved
-    
-    # generate mask
-    def generate_MaskArea(self,
-                          mask, 
-                          xmin,
-                          ymin,
-                          xmax,
-                          ymax):
-        """
-        make a mask where adversarial perturbed area
-        """
-        for i in range(xmin,xmax):
-            for j in range(ymin,ymax):
-                for channel in range(3):
-                    mask[j][i][channel] = 1
-
-        return mask
-    
-    def generate_logomask(self,
-                          logopic,
-                          flag):
-        """
-        turn logopic into binary matrix logo_mask.
-        """
-        logo_mask = np.where(logopic>flag, 0.000001, 1)
-
-        return logo_mask
-    
-    
-    def add_logomask(self,
-                     mask,
-                     logo_mask,
-                     xmin,
-                     ymin,
-                     xmax,
-                     ymax):
-        """
-        put logo_mask onto the center of the ready-to-perturbed area. haha.
-        """
-        ad_width = xmax - xmin
-        ad_height = ymax - ymin
-        
-        ad_area_center_x = (xmin+xmax)/2
-        ad_area_center_y = (ymin+ymax)/2
-        
-        ad_ratio = ad_width/ad_height
-
-        logo_height = logo_mask.shape[0]
-        logo_width = logo_mask.shape[1]
-        logo_ratio = logo_width/logo_height
-        
-        # make sure logo is contained by ad area
-        if ad_ratio > logo_ratio:
-            resize_ratio = ad_width/logo_height
-        else:
-            resize_ratio = ad_height/logo_width
-
-        # cv2.resize only eats integer
-        resized_height = int(logo_height*resize_ratio)
-        resized_width = int(logo_width*resize_ratio)
-        
-        resized_logo_mask = None
-        # skip cases where resize area is too small
-        if resized_width!=0 and resized_height!=0:
-            resized_logo_mask = cv2.resize(logo_mask, (resized_width,resized_height))
-            
-            paste_xmin = int(ad_area_center_x - resized_width/2)
-            paste_ymin = int(ad_area_center_y - resized_height/2)
-            paste_xmax = paste_xmin + resized_width
-            paste_ymax = paste_ymin + resized_height
-            
-            if (xmin+resized_height)<mask.shape[0] and (ymin+resized_width)<mask.shape[1]:
-                mask[paste_ymin:paste_ymax,paste_xmin:paste_xmax] = resized_logo_mask
-                # np.zeros([resized_height,resized_width,3])
-            else:
-                pass
-        else:
-            pass
-
-        return mask, resized_logo_mask
-
-
-    def interpret_output(self,output):
+    def _interpret_output(self, output):
         probs = np.zeros((7,7,2,20))
         class_probs = np.reshape(output[0:980],(7,7,20))
         scales = np.reshape(output[980:1078],(7,7,2))
         boxes = np.reshape(output[1078:],(7,7,2,4))
         offset = np.transpose(np.reshape(np.array([np.arange(7)]*14),(2,7,7)),(1,2,0))
-        debug_yan=np.zeros((7,7,2))
-        for i in range(2):
-            debug_yan[:,:,i]=np.multiply(class_probs[:,:,14],scales[:,:,i])
-        #print(debug_yan.reshape(-1))
+
         boxes[:,:,:,0] += offset
         boxes[:,:,:,1] += np.transpose(offset,(1,0,2))
         boxes[:,:,:,0:2] = boxes[:,:,:,0:2] / 7.0
@@ -536,7 +336,7 @@ class EOTB_attack:
         for i in range(2):
             for j in range(20):
                 probs[:,:,i,j] = np.multiply(class_probs[:,:,j],scales[:,:,i])
-        #print probs
+
         filter_mat_probs = np.array(probs>=self.threshold,dtype='bool')
         filter_mat_boxes = np.nonzero(filter_mat_probs)
 
@@ -553,23 +353,27 @@ class EOTB_attack:
         for i in range(len(boxes_filtered)):
             if probs_filtered[i] == 0 : continue
             for j in range(i+1,len(boxes_filtered)):
-                if self.iou(boxes_filtered[i],boxes_filtered[j]) > self.iou_threshold : 
+                if self._iou(boxes_filtered[i],boxes_filtered[j]) > self.iou_threshold : 
                     probs_filtered[j] = 0.0
 
         filter_iou = np.array(probs_filtered>0.0,dtype='bool')
         boxes_filtered = boxes_filtered[filter_iou]
         probs_filtered = probs_filtered[filter_iou]
 
-
         classes_num_filtered = classes_num_filtered[filter_iou]
 
         result = []
         for i in range(len(boxes_filtered)):
-            result.append([self.classes[classes_num_filtered[i]],boxes_filtered[i][0],boxes_filtered[i][1],boxes_filtered[i][2],boxes_filtered[i][3],probs_filtered[i]])
+            result.append([self.classes[classes_num_filtered[i]],
+                           boxes_filtered[i][0],
+                           boxes_filtered[i][1],
+                           boxes_filtered[i][2],
+                           boxes_filtered[i][3],
+                           probs_filtered[i]])
 
         return result
 
-    def show_results(self,img,results):
+    def show_results(self, img, results):
         img_cp = img.copy()
         if self.filewrite_txt :
             ftxt = open(self.tofile_txt,'w')
@@ -586,56 +390,36 @@ class EOTB_attack:
                                          str(int(results[i][3])) + ',' + 
                                          str(int(results[i][4]))+'], Confidence = ' + 
                                          str(results[i][5]))
-                
+
             if self.filewrite_img or self.imshow:
                 cv2.rectangle(img_cp,(x-w,y-h),(x+w,y+h),(0,255,0),2)
                 cv2.rectangle(img_cp,(x-w,y-h-20),(x+w,y-h),(125,125,125),-1)
-                cv2.putText(img_cp,results[i][0] + ' : %.2f' % results[i][5],(x-w+5,y-h-7),cv2.FONT_HERSHEY_SIMPLEX,0.5,(0,0,0),1)
+                cv2.putText(img_cp,
+                            results[i][0] + ' : %.2f' % results[i][5],(x-w+5,y-h-7),
+                            cv2.FONT_HERSHEY_SIMPLEX,0.5,(0,0,0),1)
+
             if self.filewrite_txt :                
                 ftxt.write(results[i][0] + ',' + str(x) + ',' + str(y) + ',' + str(w) + ',' + str(h)+',' + str(results[i][5]) + '\n')
+        # suppose we want to know how attack performs on class "person"
         if "person" not in class_results_set:
             self.success+=1
             print("Attack succeeded!")
         else:
             print("Attack failed!")
-            
+
         if self.filewrite_img : 
-            if self.disp_console : print('    image file writed : ' + self.tofile_img)
-            cv2.imwrite(self.tofile_img,img_cp)  
-            
-        if self.imshow :
-            cv2.imshow('YOLO_tiny detection',img_cp)
-            cv2.waitKey(1)
-            
+            if self.disp_console : print('image file writed : ' + self.tofile_img)
+            cv2.imwrite(self.tofile_img, img_cp)
+
         if self.filewrite_txt : 
-            if self.disp_console : print('    txt file writed : ' + self.tofile_txt)
+            if self.disp_console : print('txt file writed : ' + self.tofile_txt)
             ftxt.close()
 
-    def iou(self,box1,box2):
-        tb = min(box1[0]+0.5*box1[2],box2[0]+0.5*box2[2])-max(box1[0]-0.5*box1[2],box2[0]-0.5*box2[2])
-        lr = min(box1[1]+0.5*box1[3],box2[1]+0.5*box2[3])-max(box1[1]-0.5*box1[3],box2[1]-0.5*box2[3])
-        if tb < 0 or lr < 0 : intersection = 0
-        else : intersection =  tb*lr
-        return intersection / (box1[2]*box1[3] + box2[2]*box2[3] - intersection)
+        if self.imshow :
+            cv2.imshow('detection display', img_cp)
+            cv2.waitKey(1)
+            
 
-    def attack(self):
-        if self.fromfile is not None and self.frommaskfile is not None:
-            self.attack_from_file(self.fromfile, self.frommaskfile, self.fromlogofile)
 
-        if self.fromfolder is not None:
-            filename_list = os.listdir(self.fromfolder)
-            # take pics name out and construct xml filename to read from
-            for filename in filename_list:
-                pic_name = re.match(r'\d+.JPG', filename)
+    
 
-                if pic_name is not None:
-                    self.overall_pics+=1
-                    print("Pics number:",self.overall_pics,"The",pic_name[0], "!")
-
-                    pic_mask_name = pic_name[0][:-3]+"xml"
-                    fromfile = self.fromfolder+"/"+pic_name[0]
-                    frommask = self.fromfolder+"/"+pic_mask_name
-                    
-                    self.attack_from_file(fromfile, frommask)
-                    
-            print("Attack success rate:", self.success/self.overall_pics)

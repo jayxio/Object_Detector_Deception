@@ -30,6 +30,7 @@ import os
 import sys
 import argparse
 import pdb
+from tqdm import tqdm
 
 class YOLO_tiny_model_updated:
     model_input = None
@@ -39,7 +40,7 @@ class YOLO_tiny_model_updated:
     yolo_variables = None
 
     sess = None
-    weights_file = 'weights/YOLO_tiny.ckpt'
+    weights_file = '../weights/YOLO_tiny.ckpt'
     
     alpha = 0.1
     
@@ -87,26 +88,10 @@ class YOLO_tiny_model_updated:
         self.p2 = tf.multiply(self.c[:,:,:,14],self.s[:,:,:,1])
         self.p = tf.stack([self.p1,self.p2],axis=0)
         self.batch_p = tf.reduce_max(self.p,2)
-        Ctarget = tf.reduce_sum(self.batch_p)
-        # Ctarget = tf.reduce_sum(self.p)
-        '''
-        self.c = tf.reshape(tf.slice(self.fc_19,[0,0],[1,980]),(7,7,20))
-        self.s = tf.reshape(tf.slice(self.fc_19,[0,980],[1,98]),(7,7,2))
-        #self.probs = tf.Variable(tf.ones(shape=[]))
-        #self.probs = tf.placeholder('float32',[None,7,7,2])
-        #self.com=tf.constant(0.2*np.ones(98,dtype='float32'))
-        self.p1 = tf.multiply(self.c[:,:,14],self.s[:,:,0])
-        self.p2 = tf.multiply(self.c[:,:,14],self.s[:,:,1])
-        self.p = tf.stack([self.p1,self.p2],axis=0)
-        #for i in range(2):
-        #self.probs[:,:,i].assign(tf.multiply(self.c[:,:,14],self.s[:,:,i]))
-        #self.probs=tf.concat([self.p1,self.p2],0)
-        #self.yan=tf.reduce_sum(tf.maximum(self.probs,0.2))
-        #self.yan=tf.reduce_sum(self.probs)
-        Cp = tf.reduce_max(self.p) # confidence for people
-        # Cp = tf.reduce_sum(self.p)
-        '''
-        return Ctarget
+        self.Ctarget = tf.reduce_sum(self.batch_p)
+        # self.Ctarget = tf.reduce_sum(self.p)
+
+        return self.Ctarget
     
     def init_variables(self, YOLO_variables):
         init = tf.global_variables_initializer()
@@ -227,8 +212,6 @@ def parse_arguments(argv):
     parser.add_argument('output_folder_dir', type=str, help='Dir for processed videos to save.')
     parser.add_argument('mode', type=str, help='Processing mdoe for adversary attack.')
     
-    parser.add_argument('--useEOT', type=str,
-                        help='Create EOT attack graph instead of single angle graph.', default=44)
     parser.add_argument('--disp_console', type=str2bool,
                         help='Create EOT attack graph instead of single angle graph.', default=True)
 
@@ -242,23 +225,64 @@ def main(args):
                  'yolo_disp_console': args.disp_console,
                  'session': tf.Session()}
     
-    yolo_detector = yolo_tiny_model(init_dict)
+    yolo_detector = YOLO_tiny_model_updated(init_dict)
     yolo_variables = yolo_detector.get_yolo_variables()
+    
     
     yolo_detector.init_variables(yolo_variables)
     yolo_detector.load_weight(yolo_variables)
 
     output = yolo_detector.get_output_tensor()
     
-    pic = cv2.imread('test/任务.jpeg')
-    pic = cv2.resize(pic,(448,448))/255*2-1
-    feed_batch = pic[np.newaxis, :]
-    feed_dict = {tf_input: feed_batch}
+    fetch_list = [output,
+                  yolo_detector.conv_1,
+                  yolo_detector.pool_2,
+                  yolo_detector.conv_3,
+                  yolo_detector.pool_4,
+                  yolo_detector.conv_5,
+                  yolo_detector.pool_6,
+                  yolo_detector.conv_7,
+                  yolo_detector.pool_8,
+                  yolo_detector.conv_9,
+                  yolo_detector.pool_10,
+                  yolo_detector.conv_11,
+                  yolo_detector.pool_12,
+                  yolo_detector.conv_13,
+                  yolo_detector.conv_14,
+                  yolo_detector.conv_15,
+                  yolo_detector.fc_16,
+                  yolo_detector.fc_17,
+                  yolo_detector.fc_19]
+
+    for i in range(len(fetch_list)):
+        print(fetch_list[i])
+    pdb.set_trace()
     
-    # 必须要获得model的会话才可以操纵她
-    sess = yolo_detector.get_model_sess()
-    result = sess.run([output], feed_dict=feed_dict)
-    print(result)
+    file_mean_stds = []
+
+    filenames = os.listdir(args.input_folder_dir)
+    with tqdm(total = len(filenames)) as pbar:
+        for filename in filenames:
+            activation_mean = []
+            activation_stds = []
+            pic_dir = os.path.join(args.input_folder_dir, filename)
+            pic = cv2.imread(pic_dir)
+            pic = cv2.resize(pic,(448,448))/255*2-1
+            feed_batch = pic[np.newaxis, :]
+            feed_dict = {tf_input: feed_batch}
+
+            # 必须要获得model的会话才可以操纵她
+            sess = yolo_detector.get_model_sess()
+            results = sess.run(fetch_list, feed_dict=feed_dict)
+            for result in results[1:19]:
+                activation_mean.append(result.mean())
+                activation_stds.append(result.std())
+            
+            file_mean_stds.append((activation_mean,activation_stds))
+            
+            # print(results[0])
+            pbar.update(1)
+
     yolo_detector.terminate_model()
 
 if __name__ == '__main__':
